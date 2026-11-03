@@ -1,0 +1,31 @@
+<resources>
+    <!-- Brand -->
+    <color name="primary">#6750A4</color>
+    <color name="on_primary">#FFFFFF</color>
+
+    <!-- Backgrounds -->
+    <color name="background">#F4F3F8</color>
+    <color name="card_background">#FFFFFF</color>
+
+    <!-- Text -->
+    <color name="text_primary">#1C1B1F</color>
+    <color name="text_secondary">#49454F</color>
+    <color name="on_surface">#1C1B1F</color>
+    <color name="on_surface_variant">#49454F</color>
+
+    <!-- Status card backgrounds -->
+    <color name="status_red">#C62828</color>
+    <color name="status_green">#2E7D32</color>
+
+    <!-- Status text -->
+    <color name="status_default">#49454F</color>
+    <color name="status_success">#1B8041</color>
+    <color name="status_error">#B3261E</color>
+    <color name="error_text">#B3261E</color>
+
+    <!-- Buttons -->
+    <color name="button_primary">#1565C0</color>
+    <color name="button_secondary">#455A64</color>
+    <color name="button_destructive">#C62828</color>
+    <color name="button_text">#FFFFFF</color>
+</resources>

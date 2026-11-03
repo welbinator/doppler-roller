@@ -1,0 +1,5 @@
+<resources>
+    <string name="app_name">Doppler Roller</string>
+    <string name="status_inactive">NO ACTIVE TOKEN — Hermes has no access</string>
+    <string name="status_active">ACTIVE TOKEN — tap Delete when done with your session</string>
+</resources>
