@@ -3,7 +3,10 @@ package com.apexbranding.dopplerroller
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.content.Intent
+import android.net.Uri
 import android.os.Bundle
+import android.os.Environment
 import android.view.View
 import android.widget.AdapterView
 import android.widget.ArrayAdapter
@@ -14,10 +17,12 @@ import android.widget.Spinner
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.content.FileProvider
 import androidx.lifecycle.lifecycleScope
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
 import com.google.android.material.card.MaterialCardView
+import com.google.android.material.snackbar.Snackbar
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -27,6 +32,8 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
+import java.io.File
+import java.io.FileOutputStream
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -134,7 +141,125 @@ class MainActivity : AppCompatActivity() {
         } else {
             showSetupScreen()
         }
+
+        // Check for updates in background — non-blocking
+        checkForUpdate()
     }
+
+    // ─── Update Checker ─────────────────────────────────────────────────────────
+
+    private fun checkForUpdate() {
+        lifecycleScope.launch {
+            val result = withContext(Dispatchers.IO) { doCheckForUpdate() }
+            result ?: return@launch  // null = no update or error; stay silent
+
+            val (remoteTag, apkUrl) = result
+            val rootView = window.decorView.rootView
+            Snackbar.make(rootView, "Update available ($remoteTag) — tap to download", Snackbar.LENGTH_INDEFINITE)
+                .setAction("Download") {
+                    downloadAndInstall(apkUrl, remoteTag)
+                }
+                .show()
+        }
+    }
+
+    /** Returns Pair(tag, apkUrl) if an update is available, null otherwise. Never throws. */
+    private fun doCheckForUpdate(): Pair<String, String>? {
+        return try {
+            val req = Request.Builder()
+                .url("https://api.github.com/repos/welbinator/doppler-roller/releases/latest")
+                .addHeader("Accept", "application/vnd.github+json")
+                .get()
+                .build()
+            val resp = client.newCall(req).execute()
+            if (!resp.isSuccessful) return null
+
+            val body = resp.body?.string() ?: return null
+            val json = JSONObject(body)
+            val tagName = json.optString("tag_name") ?: return null
+            val remoteVersion = tagName.replace("v", "").trim().toIntOrNull() ?: return null
+
+            val localVersion = packageManager.getPackageInfo(packageName, 0).versionName
+                .replace("v", "").trim().toIntOrNull() ?: return null
+
+            if (remoteVersion <= localVersion) return null
+
+            val assets = json.optJSONArray("assets") ?: return null
+            var apkUrl: String? = null
+            for (i in 0 until assets.length()) {
+                val asset = assets.getJSONObject(i)
+                val downloadUrl = asset.optString("browser_download_url") ?: continue
+                if (downloadUrl.endsWith(".apk")) {
+                    apkUrl = downloadUrl
+                    break
+                }
+            }
+            apkUrl?.let { Pair(tagName, it) }
+        } catch (e: Exception) {
+            null  // silently ignore any failure
+        }
+    }
+
+    private fun downloadAndInstall(apkUrl: String, tag: String) {
+        lifecycleScope.launch {
+            val apkFile = withContext(Dispatchers.IO) { doDownloadApk(apkUrl, tag) }
+            if (apkFile == null) {
+                setStatus("Download failed", true)
+                return@launch
+            }
+            launchInstaller(apkFile)
+        }
+    }
+
+    private fun doDownloadApk(url: String, tag: String): File? {
+        return try {
+            val req = Request.Builder().url(url).get().build()
+            val resp = client.newCall(req).execute()
+            if (!resp.isSuccessful) return null
+
+            val body = resp.body ?: return null
+            val contentLength = body.contentLength()
+
+            val dir = getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)
+                ?: cacheDir
+            val file = File(dir, "doppler-roller-$tag.apk")
+
+            FileOutputStream(file).use { out ->
+                val source = body.byteStream()
+                val buf = ByteArray(8192)
+                var downloaded = 0L
+                var lastPct = -1
+                var n: Int
+                while (source.read(buf).also { n = it } != -1) {
+                    out.write(buf, 0, n)
+                    downloaded += n
+                    if (contentLength > 0) {
+                        val pct = (downloaded * 100 / contentLength).toInt()
+                        if (pct != lastPct) {
+                            lastPct = pct
+                            runOnUiThread { setStatus("Downloading update… $pct%", false) }
+                        }
+                    }
+                }
+            }
+            runOnUiThread { setStatus("", false) }
+            file
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    private fun launchInstaller(apkFile: File) {
+        val uri = FileProvider.getUriForFile(this, "$packageName.fileprovider", apkFile)
+        val intent = Intent(Intent.ACTION_VIEW).apply {
+            setDataAndType(uri, "application/vnd.android.package-archive")
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        startActivity(intent)
+    }
+
+    // ─── UI helpers ─────────────────────────────────────────────────────────────
 
     private fun showSetupScreen() {
         setupLayout.visibility = View.VISIBLE
