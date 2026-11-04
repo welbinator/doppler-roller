@@ -58,6 +58,8 @@ class MainActivity : AppCompatActivity() {
     private lateinit var btnDelete: Button
     private lateinit var tvStatus: TextView
 
+    private lateinit var btnSettings: Button
+
     private val client = OkHttpClient()
     private val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
 
@@ -101,6 +103,11 @@ class MainActivity : AppCompatActivity() {
         btnCreate = findViewById(R.id.btnCreate)
         btnDelete = findViewById(R.id.btnDelete)
         tvStatus = findViewById(R.id.tvStatus)
+        btnSettings = findViewById(R.id.btnSettings)
+
+        btnSettings.setOnClickListener {
+            startActivity(Intent(this, SettingsActivity::class.java))
+        }
 
         btnSave.setOnClickListener {
             val token = etPersonalToken.text.toString().trim()
@@ -552,10 +559,16 @@ class MainActivity : AppCompatActivity() {
 
             val credential = Credentials.basic(personalToken, "")
 
+            val body = JSONObject().apply {
+                put("project", project)
+                put("config", config)
+                put("slug", tokenSlug)
+            }.toString().toRequestBody(JSON_MEDIA_TYPE)
+
             val req = Request.Builder()
-                .url("https://api.doppler.com/v3/configs/config/tokens/$tokenSlug?project=$project&config=$config")
+                .url("https://api.doppler.com/v3/configs/config/tokens/token")
                 .addHeader("Authorization", credential)
-                .delete()
+                .delete(body)
                 .build()
 
             val resp = client.newCall(req).execute()

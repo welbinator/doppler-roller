@@ -11,6 +11,10 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.DopplerRoller">
         <activity
+            android:name=".SettingsActivity"
+            android:exported="false"
+            android:parentActivityName=".MainActivity" />
+        <activity
             android:name=".MainActivity"
             android:exported="true">
             <intent-filter>
