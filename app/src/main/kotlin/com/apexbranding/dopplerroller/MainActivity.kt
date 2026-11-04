@@ -5,9 +5,12 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.os.Bundle
 import android.view.View
+import android.widget.AdapterView
+import android.widget.ArrayAdapter
 import android.widget.Button
 import android.widget.EditText
 import android.widget.LinearLayout
+import android.widget.Spinner
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
@@ -37,6 +40,9 @@ class MainActivity : AppCompatActivity() {
 
     // Main screen
     private lateinit var mainLayout: LinearLayout
+    private lateinit var spinnerProject: Spinner
+    private lateinit var spinnerConfig: Spinner
+    private lateinit var btnRefresh: Button
     private lateinit var statusCard: MaterialCardView
     private lateinit var tvStatusCard: TextView
     private lateinit var tvTokenSuffix: TextView
@@ -47,6 +53,14 @@ class MainActivity : AppCompatActivity() {
 
     private val client = OkHttpClient()
     private val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
+
+    // In-memory lists for spinner data
+    private val projectSlugs = mutableListOf<String>()
+    private val configNames = mutableListOf<String>()
+
+    // Suppress spinner callbacks during programmatic updates
+    private var suppressProjectListener = false
+    private var suppressConfigListener = false
 
     private val prefs by lazy {
         val masterKey = MasterKey.Builder(this)
@@ -70,6 +84,9 @@ class MainActivity : AppCompatActivity() {
         btnSave = findViewById(R.id.btnSave)
 
         mainLayout = findViewById(R.id.mainLayout)
+        spinnerProject = findViewById(R.id.spinnerProject)
+        spinnerConfig = findViewById(R.id.spinnerConfig)
+        btnRefresh = findViewById(R.id.btnRefresh)
         statusCard = findViewById(R.id.statusCard)
         tvStatusCard = findViewById(R.id.tvStatusCard)
         tvTokenSuffix = findViewById(R.id.tvTokenSuffix)
@@ -99,8 +116,18 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
+        btnRefresh.setOnClickListener { loadProjects() }
         btnCreate.setOnClickListener { createToken() }
         btnDelete.setOnClickListener { deleteToken() }
+
+        spinnerProject.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(parent: AdapterView<*>, view: View?, pos: Int, id: Long) {
+                if (suppressProjectListener) return
+                val slug = projectSlugs.getOrNull(pos) ?: return
+                loadConfigs(slug)
+            }
+            override fun onNothingSelected(parent: AdapterView<*>) {}
+        }
 
         if (prefs.getString("personal_token", null) != null) {
             showMainScreen()
@@ -118,17 +145,21 @@ class MainActivity : AppCompatActivity() {
         setupLayout.visibility = View.GONE
         mainLayout.visibility = View.VISIBLE
         updateMainUI()
+        loadProjects()
     }
 
     private fun updateMainUI() {
         val tokenKey = prefs.getString("service_token_key", null)
         val hasToken = tokenKey != null
+        val activeProject = prefs.getString("active_project", null)
+        val activeConfig = prefs.getString("active_config", null)
 
         if (hasToken) {
             statusCard.setCardBackgroundColor(getColor(R.color.status_green))
             tvStatusCard.text = getString(R.string.status_active)
             tvTokenSuffix.visibility = View.VISIBLE
-            tvTokenSuffix.text = "Token: …${tokenKey!!.takeLast(8)}"
+            val projectInfo = if (activeProject != null && activeConfig != null) "$activeProject / $activeConfig  " else ""
+            tvTokenSuffix.text = "${projectInfo}…${tokenKey!!.takeLast(8)}"
             btnCopy.visibility = View.VISIBLE
             btnCopy.isEnabled = true
             btnCopy.alpha = 1.0f
@@ -139,19 +170,99 @@ class MainActivity : AppCompatActivity() {
             btnCopy.visibility = View.GONE
         }
 
-        btnCreate.isEnabled = !hasToken
-        btnCreate.alpha = if (!hasToken) 1.0f else 0.4f
+        // Spinners disabled when token is active
+        spinnerProject.isEnabled = !hasToken
+        spinnerProject.alpha = if (!hasToken) 1.0f else 0.5f
+        spinnerConfig.isEnabled = !hasToken
+        spinnerConfig.alpha = if (!hasToken) 1.0f else 0.5f
+        btnRefresh.isEnabled = !hasToken
+        btnRefresh.alpha = if (!hasToken) 1.0f else 0.5f
+
+        val projectSelected = projectSlugs.isNotEmpty() && spinnerProject.selectedItemPosition >= 0
+        val configSelected = configNames.isNotEmpty() && spinnerConfig.selectedItemPosition >= 0
+
+        btnCreate.isEnabled = !hasToken && projectSelected && configSelected
+        btnCreate.alpha = if (!hasToken && projectSelected && configSelected) 1.0f else 0.4f
 
         btnDelete.isEnabled = hasToken
         btnDelete.alpha = if (hasToken) 1.0f else 0.4f
     }
 
+    private fun loadProjects() {
+        setStatus("Loading projects…", false)
+        btnRefresh.isEnabled = false
+
+        lifecycleScope.launch {
+            val result = withContext(Dispatchers.IO) { doFetchProjects() }
+            btnRefresh.isEnabled = prefs.getString("service_token_key", null) == null
+
+            if (result.success) {
+                suppressProjectListener = true
+                projectSlugs.clear()
+                projectSlugs.addAll(result.items)
+
+                val adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_item, projectSlugs)
+                adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
+                spinnerProject.adapter = adapter
+                suppressProjectListener = false
+
+                setStatus("", false)
+
+                // Load configs for first project
+                if (projectSlugs.isNotEmpty()) {
+                    loadConfigs(projectSlugs[0])
+                } else {
+                    setStatus("No projects found", true)
+                    updateMainUI()
+                }
+            } else {
+                setStatus(result.message, true)
+                updateMainUI()
+            }
+        }
+    }
+
+    private fun loadConfigs(projectSlug: String) {
+        setStatus("Loading configs…", false)
+
+        lifecycleScope.launch {
+            val result = withContext(Dispatchers.IO) { doFetchConfigs(projectSlug) }
+
+            suppressConfigListener = true
+            configNames.clear()
+            configNames.addAll(result.items)
+
+            val adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_item, configNames)
+            adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
+            spinnerConfig.adapter = adapter
+            suppressConfigListener = false
+
+            if (result.success) {
+                setStatus("", false)
+            } else {
+                setStatus(result.message, true)
+            }
+            updateMainUI()
+        }
+    }
+
     private fun createToken() {
+        val projectPos = spinnerProject.selectedItemPosition
+        val configPos = spinnerConfig.selectedItemPosition
+        val project = projectSlugs.getOrNull(projectPos) ?: run {
+            setStatus("Select a project first", true)
+            return
+        }
+        val config = configNames.getOrNull(configPos) ?: run {
+            setStatus("Select a config first", true)
+            return
+        }
+
         setBusy(true)
         setStatus("Creating token…", false)
 
         lifecycleScope.launch {
-            val result = withContext(Dispatchers.IO) { doCreateToken() }
+            val result = withContext(Dispatchers.IO) { doCreateToken(project, config) }
             setBusy(false)
             if (result.success) {
                 updateMainUI()
@@ -173,6 +284,8 @@ class MainActivity : AppCompatActivity() {
                 prefs.edit()
                     .remove("service_token_key")
                     .remove("service_token_slug")
+                    .remove("active_project")
+                    .remove("active_config")
                     .apply()
                 updateMainUI()
                 setStatus("Token deleted. Hermes no longer has access.", false)
@@ -198,88 +311,101 @@ class MainActivity : AppCompatActivity() {
 
     // ─── Network ───────────────────────────────────────────────────────────────
 
-    private fun doCreateToken(): OpResult {
+    private data class ListResult(val success: Boolean, val message: String, val items: List<String>)
+
+    private fun doFetchProjects(): ListResult {
+        return try {
+            val personalToken = prefs.getString("personal_token", null)
+                ?: return ListResult(false, "No personal token saved", emptyList())
+            val credential = Credentials.basic(personalToken, "")
+
+            val req = Request.Builder()
+                .url("https://api.doppler.com/v3/projects?per_page=100")
+                .addHeader("Authorization", credential)
+                .get()
+                .build()
+
+            val resp = client.newCall(req).execute()
+            val body = resp.body?.string() ?: ""
+            if (!resp.isSuccessful) {
+                return ListResult(false, "Failed to fetch projects: ${resp.code}", emptyList())
+            }
+
+            val arr = JSONObject(body).getJSONArray("projects")
+            val slugs = mutableListOf<String>()
+            for (i in 0 until arr.length()) {
+                slugs.add(arr.getJSONObject(i).getString("slug"))
+            }
+            ListResult(true, "", slugs)
+        } catch (e: Exception) {
+            ListResult(false, "Error: ${e.message}", emptyList())
+        }
+    }
+
+    private fun doFetchConfigs(project: String): ListResult {
+        return try {
+            val personalToken = prefs.getString("personal_token", null)
+                ?: return ListResult(false, "No personal token saved", emptyList())
+            val credential = Credentials.basic(personalToken, "")
+
+            val req = Request.Builder()
+                .url("https://api.doppler.com/v3/configs?project=${project}&per_page=100")
+                .addHeader("Authorization", credential)
+                .get()
+                .build()
+
+            val resp = client.newCall(req).execute()
+            val body = resp.body?.string() ?: ""
+            if (!resp.isSuccessful) {
+                return ListResult(false, "Failed to fetch configs: ${resp.code}", emptyList())
+            }
+
+            val arr = JSONObject(body).getJSONArray("configs")
+            val names = mutableListOf<String>()
+            for (i in 0 until arr.length()) {
+                names.add(arr.getJSONObject(i).getString("name"))
+            }
+            ListResult(true, "", names)
+        } catch (e: Exception) {
+            ListResult(false, "Error: ${e.message}", emptyList())
+        }
+    }
+
+    private fun doCreateToken(project: String, config: String): OpResult {
         return try {
             val personalToken = prefs.getString("personal_token", null)
                 ?: return OpResult(false, "No personal token saved")
-
             val credential = Credentials.basic(personalToken, "")
 
-            // Get or create service account slug
-            var serviceAccountSlug = prefs.getString("service_account_slug", null)
-            if (serviceAccountSlug == null) {
-                val body = JSONObject().apply {
-                    put("name", "hermes-agent")
-                    put("display_name", "Hermes Agent")
-                }.toString().toRequestBody(JSON_MEDIA_TYPE)
-
-                val req = Request.Builder()
-                    .url("https://api.doppler.com/v3/workplace/service_accounts")
-                    .addHeader("Authorization", credential)
-                    .post(body)
-                    .build()
-
-                val resp = client.newCall(req).execute()
-                val bodyStr = resp.body?.string() ?: ""
-                if (!resp.isSuccessful) {
-                    if (resp.code == 409) {
-                        // Already exists — list and find it
-                        val listReq = Request.Builder()
-                            .url("https://api.doppler.com/v3/workplace/service_accounts")
-                            .addHeader("Authorization", credential)
-                            .get()
-                            .build()
-                        val listResp = client.newCall(listReq).execute()
-                        val listBody = listResp.body?.string() ?: ""
-                        if (!listResp.isSuccessful) {
-                            return OpResult(false, "Failed to list service accounts: ${listResp.code}")
-                        }
-                        val accounts = JSONObject(listBody).getJSONArray("service_accounts")
-                        var found: String? = null
-                        for (i in 0 until accounts.length()) {
-                            val acct = accounts.getJSONObject(i)
-                            if (acct.getString("name") == "hermes-agent") {
-                                found = acct.getString("slug")
-                                break
-                            }
-                        }
-                        serviceAccountSlug = found
-                            ?: return OpResult(false, "Service account conflict but could not find existing")
-                    } else {
-                        return OpResult(false, "Failed to create service account: ${resp.code} $bodyStr")
-                    }
-                } else {
-                    serviceAccountSlug = JSONObject(bodyStr).getJSONObject("service_account").getString("slug")
-                }
-                prefs.edit().putString("service_account_slug", serviceAccountSlug).apply()
-            }
-
-            // Create new token
             val timestamp = SimpleDateFormat("yyyyMMddHHmmss", Locale.US).format(Date())
-            val tokenBody = JSONObject().apply {
-                put("name", "hermes-token-$timestamp")
-                put("expires_at", JSONObject.NULL)
+            val body = JSONObject().apply {
+                put("project", project)
+                put("config", config)
+                put("name", "hermes-$timestamp")
+                put("access", "read")
             }.toString().toRequestBody(JSON_MEDIA_TYPE)
 
-            val tokenReq = Request.Builder()
-                .url("https://api.doppler.com/v3/workplace/service_accounts/$serviceAccountSlug/tokens")
+            val req = Request.Builder()
+                .url("https://api.doppler.com/v3/configs/config/tokens")
                 .addHeader("Authorization", credential)
-                .post(tokenBody)
+                .post(body)
                 .build()
 
-            val tokenResp = client.newCall(tokenReq).execute()
-            val tokenBodyStr = tokenResp.body?.string() ?: ""
-            if (!tokenResp.isSuccessful) {
-                return OpResult(false, "Failed to create token: ${tokenResp.code} $tokenBodyStr")
+            val resp = client.newCall(req).execute()
+            val respBody = resp.body?.string() ?: ""
+            if (!resp.isSuccessful) {
+                return OpResult(false, "Failed to create token: ${resp.code} $respBody")
             }
 
-            val tokenJson = JSONObject(tokenBodyStr)
-            val newTokenKey = tokenJson.getJSONObject("token").getString("key")
-            val newTokenSlug = tokenJson.getJSONObject("token").getString("slug")
+            val tokenObj = JSONObject(respBody).getJSONObject("token")
+            val newKey = tokenObj.getString("key")
+            val newSlug = tokenObj.getString("slug")
 
             prefs.edit()
-                .putString("service_token_key", newTokenKey)
-                .putString("service_token_slug", newTokenSlug)
+                .putString("service_token_key", newKey)
+                .putString("service_token_slug", newSlug)
+                .putString("active_project", project)
+                .putString("active_config", config)
                 .apply()
 
             OpResult(true, "")
@@ -292,20 +418,22 @@ class MainActivity : AppCompatActivity() {
         return try {
             val personalToken = prefs.getString("personal_token", null)
                 ?: return OpResult(false, "No personal token saved")
-            val serviceAccountSlug = prefs.getString("service_account_slug", null)
-                ?: return OpResult(false, "No service account slug saved")
             val tokenSlug = prefs.getString("service_token_slug", null)
                 ?: return OpResult(false, "No token slug saved")
+            val project = prefs.getString("active_project", null)
+                ?: return OpResult(false, "No active project saved")
+            val config = prefs.getString("active_config", null)
+                ?: return OpResult(false, "No active config saved")
 
             val credential = Credentials.basic(personalToken, "")
 
-            val deleteReq = Request.Builder()
-                .url("https://api.doppler.com/v3/workplace/service_accounts/$serviceAccountSlug/tokens/$tokenSlug")
+            val req = Request.Builder()
+                .url("https://api.doppler.com/v3/configs/config/tokens/$tokenSlug?project=$project&config=$config")
                 .addHeader("Authorization", credential)
                 .delete()
                 .build()
 
-            val resp = client.newCall(deleteReq).execute()
+            val resp = client.newCall(req).execute()
             if (!resp.isSuccessful && resp.code != 404) {
                 return OpResult(false, "Delete failed: ${resp.code}")
             }
